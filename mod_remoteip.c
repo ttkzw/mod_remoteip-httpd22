@@ -59,6 +59,12 @@ typedef struct {
     const char *proxied_remote;
 } remoteip_req_t;
 
+typedef struct {
+    conn_rec *conn;
+    apr_sockaddr_t *remote_addr;
+    char *remote_ip;
+} remoteip_cleanup_rec_t;
+
 static void *create_remoteip_server_config(apr_pool_t *p, server_rec *s)
 {
     remoteip_config_t *config = apr_pcalloc(p, sizeof *config);
@@ -216,12 +222,21 @@ static const char *proxylist_read(cmd_parms *cmd, void *cfg,
     return NULL;
 }
 
+static apr_status_t remoteip_cleanup(void *data) {
+    remoteip_cleanup_rec_t *cleanup_rec = (remoteip_cleanup_rec_t *)data;
+    cleanup_rec->conn->remote_addr = cleanup_rec->remote_addr;
+    cleanup_rec->conn->remote_ip = cleanup_rec->remote_ip;
+    return APR_SUCCESS;
+}
+
+
 static int remoteip_modify_request(request_rec *r)
 {
     conn_rec *c = r->connection;
     remoteip_config_t *config = (remoteip_config_t *)
         ap_get_module_config(r->server->module_config, &remoteip_module);
     remoteip_req_t *req = NULL;
+    remoteip_cleanup_rec_t *cleanup_rec;
 
     apr_sockaddr_t *temp_sa;
 
@@ -393,6 +408,12 @@ static int remoteip_modify_request(request_rec *r)
                            req->proxy_ips);
         }
     }
+
+    cleanup_rec = (remoteip_cleanup_rec_t *)apr_pcalloc(r->pool, sizeof(remoteip_cleanup_rec_t));
+    cleanup_rec->conn = c;
+    cleanup_rec->remote_addr = c->remote_addr;
+    cleanup_rec->remote_ip = c->remote_ip;
+    apr_pool_cleanup_register(r->pool, cleanup_rec, remoteip_cleanup, apr_pool_cleanup_null);
 
     c->remote_addr = req->remote_addr;
     c->remote_ip = req->remote_ip;
