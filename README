@@ -6,6 +6,9 @@ This is a backport of apache 2.4.1 mod_remoteip to apache 2.2.x.
 or simply try:
  make; make install
 
+## Build Source RPM
+ make srpm
+
 ## Configuration
 See http://httpd.apache.org/docs/2.4/mod/mod_remoteip.html
 
