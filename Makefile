@@ -12,7 +12,7 @@ install: mod_remoteip.o
 clean:
 	rm -rf *~ *.o *.so *.lo *.la *.slo .libs/  build dist
 
-VERSION=$(shell git rev-list HEAD --count 2>/dev/null || echo 0)
+VERSION=$(shell git rev-list HEAD 2>/dev/null | wc -l )
 NAME=mod_remoteip
 # set EXTRAREV to add stuff to the RPM release, .e.g. EXTRAREV=.123 for build number 123
 srpm: clean
