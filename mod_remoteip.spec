@@ -38,3 +38,8 @@ rm -rf %{buildroot}
 %defattr(-,root,root,-)
 %doc mod_remoteip.conf README LICENSE
 %{_libdir}/httpd/modules/*
+
+%post
+if service httpd status ; then
+    service httpd restart
+fi
