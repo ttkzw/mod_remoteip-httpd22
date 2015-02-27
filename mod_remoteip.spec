@@ -11,6 +11,8 @@ Source0:        %{name}-%{version}.tar.gz
 BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 BuildRequires:  httpd-devel >= 2.2.0, make, gcc
+Requires:       httpd >= 2.2
+Conflicts:      httpd >= 2.3
 
 %description
 Configuration see http://httpd.apache.org/docs/2.4/mod/mod_remoteip.html
