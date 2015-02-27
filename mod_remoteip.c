@@ -39,9 +39,9 @@ typedef struct {
 typedef struct {
     /** The header to retrieve a proxy-via ip list */
     const char *header_name;
-    /** A header to record the proxied IP's
-     * (removed as the physical connection and
-     * from the proxy-via ip header value list)
+    /** A header to record the proxied IP's 
+     * (removed as the physical connection and 
+     * from the proxy-via ip header value list) 
      */
     const char *proxies_header_name;
     /** A list of trusted proxies, ideally configured
@@ -51,13 +51,19 @@ typedef struct {
 } remoteip_config_t;
 
 typedef struct {
-    apr_sockaddr_t *remote_addr;
-    char *remote_ip;
+    /** The previous proxy-via request header value */
+    const char *prior_remote;
+    /** The unmodified original ip and address */
+    const char *orig_ip;
+    apr_sockaddr_t *orig_addr;
     /** The list of proxy ip's ignored as remote ip's */
     const char *proxy_ips;
     /** The remaining list of untrusted proxied remote ip's */
     const char *proxied_remote;
-} remoteip_req_t;
+    /** The most recently modified ip and address record */
+    const char *proxied_ip;
+    apr_sockaddr_t proxied_addr;
+} remoteip_conn_t;
 
 static void *create_remoteip_server_config(apr_pool_t *p, server_rec *s)
 {
@@ -93,7 +99,7 @@ static const char *header_name_set(cmd_parms *cmd, void *dummy,
 {
     remoteip_config_t *config = ap_get_module_config(cmd->server->module_config,
                                                      &remoteip_module);
-    config->header_name = arg;
+    config->header_name = apr_pstrdup(cmd->pool, arg);
     return NULL;
 }
 
@@ -102,7 +108,7 @@ static const char *proxies_header_name_set(cmd_parms *cmd, void *dummy,
 {
     remoteip_config_t *config = ap_get_module_config(cmd->server->module_config,
                                                      &remoteip_module);
-    config->proxies_header_name = arg;
+    config->proxies_header_name = apr_pstrdup(cmd->pool, arg);
     return NULL;
 }
 
@@ -121,7 +127,7 @@ static int looks_like_ip(const char *ipstr)
     return (*ipstr == '\0');
 }
 
-static const char *proxies_set(cmd_parms *cmd, void *cfg,
+static const char *proxies_set(cmd_parms *cmd, void *internal,
                                const char *arg)
 {
     remoteip_config_t *config = ap_get_module_config(cmd->server->module_config,
@@ -130,15 +136,13 @@ static const char *proxies_set(cmd_parms *cmd, void *cfg,
     apr_status_t rv;
     char *ip = apr_pstrdup(cmd->temp_pool, arg);
     char *s = ap_strchr(ip, '/');
-    if (s) {
+    if (s)
         *s++ = '\0';
-    }
 
-    if (!config->proxymatch_ip) {
+    if (!config->proxymatch_ip)
         config->proxymatch_ip = apr_array_make(cmd->pool, 1, sizeof(*match));
-    }
     match = (remoteip_proxymatch_t *) apr_array_push(config->proxymatch_ip);
-    match->internal = cmd->info;
+    match->internal = internal;
 
     if (looks_like_ip(ip)) {
         /* Note s may be null, that's fine (explicit host) */
@@ -149,8 +153,8 @@ static const char *proxies_set(cmd_parms *cmd, void *cfg,
         apr_sockaddr_t *temp_sa;
 
         if (s) {
-            return apr_pstrcat(cmd->pool, "RemoteIP: Error parsing IP ", arg,
-                               " the subnet /", s, " is invalid for ",
+            return apr_pstrcat(cmd->pool, "RemoteIP: Error parsing IP ", arg, 
+                               " the subnet /", s, " is invalid for ", 
                                cmd->cmd->name, NULL);
         }
 
@@ -160,26 +164,25 @@ static const char *proxies_set(cmd_parms *cmd, void *cfg,
         {
             apr_sockaddr_ip_get(&ip, temp_sa);
             rv = apr_ipsubnet_create(&match->ip, ip, NULL, cmd->pool);
-            if (!(temp_sa = temp_sa->next)) {
+            if (!(temp_sa = temp_sa->next))
                 break;
-            }
-            match = (remoteip_proxymatch_t *)
+            match = (remoteip_proxymatch_t *) 
                     apr_array_push(config->proxymatch_ip);
-            match->internal = cmd->info;
+            match->internal = internal;
         }
     }
 
     if (rv != APR_SUCCESS) {
         char msgbuf[128];
         apr_strerror(rv, msgbuf, sizeof(msgbuf));
-        return apr_pstrcat(cmd->pool, "RemoteIP: Error parsing IP ", arg,
+        return apr_pstrcat(cmd->pool, "RemoteIP: Error parsing IP ", arg, 
                            " (", msgbuf, " error) for ", cmd->cmd->name, NULL);
     }
 
     return NULL;
 }
 
-static const char *proxylist_read(cmd_parms *cmd, void *cfg,
+static const char *proxylist_read(cmd_parms *cmd, void *internal,
                                   const char *filename)
 {
     char lbuf[MAX_STRING_LEN];
@@ -193,19 +196,18 @@ static const char *proxylist_read(cmd_parms *cmd, void *cfg,
     rv = ap_pcfg_openfile(&cfp, cmd->temp_pool, filename);
     if (rv != APR_SUCCESS) {
         return apr_psprintf(cmd->pool, "%s: Could not open file %s: %s",
-                            cmd->cmd->name, filename,
+                            cmd->cmd->name, filename, 
                             apr_strerror(rv, lbuf, sizeof(lbuf)));
     }
 
     while (!(ap_cfg_getline(lbuf, MAX_STRING_LEN, cfp))) {
         args = lbuf;
         while (*(arg = ap_getword_conf(cmd->temp_pool, &args)) != '\0') {
-            if (*arg == '#' || *arg == '\0') {
+            if (*arg == '#' || *arg == '\0')
                 break;
-            }
-            errmsg = proxies_set(cmd, cfg, arg);
+            errmsg = proxies_set(cmd, internal, arg);
             if (errmsg) {
-                errmsg = apr_psprintf(cmd->pool, "%s at line %d of %s",
+                errmsg = apr_psprintf(cmd->pool, "%s at line %d of %s", 
                                       errmsg, cfp->line_number, filename);
                 return errmsg;
             }
@@ -216,34 +218,53 @@ static const char *proxylist_read(cmd_parms *cmd, void *cfg,
     return NULL;
 }
 
-static int remoteip_modify_request(request_rec *r)
+static int remoteip_modify_connection(request_rec *r)
 {
     conn_rec *c = r->connection;
     remoteip_config_t *config = (remoteip_config_t *)
         ap_get_module_config(r->server->module_config, &remoteip_module);
-    remoteip_req_t *req = NULL;
-
+    remoteip_conn_t *conn;
+#ifdef REMOTEIP_OPTIMIZED
+    apr_sockaddr_t temp_sa_buff;
+    apr_sockaddr_t *temp_sa = &temp_sa_buff;
+#else
     apr_sockaddr_t *temp_sa;
-
+#endif
     apr_status_t rv;
-    char *remote;
+    char *remote = (char *) apr_table_get(r->headers_in, config->header_name);
     char *proxy_ips = NULL;
     char *parse_remote;
     char *eos;
     unsigned char *addrbyte;
     void *internal = NULL;
 
-    if (!config->header_name) {
-        return DECLINED;
+    apr_pool_userdata_get((void*)&conn, "mod_remoteip-conn", c->pool);
+
+    if (conn) {
+        if (remote && (strcmp(remote, conn->prior_remote) == 0)) {
+            /* TODO: Recycle r-> overrides from previous request
+             */
+            goto ditto_request_rec;
+        }
+        else {
+            /* TODO: Revert connection from previous request
+             */
+            c->remote_addr = conn->orig_addr;
+            c->remote_ip = (char *) conn->orig_ip;
+        }
     }
 
-    remote = (char *) apr_table_get(r->headers_in, config->header_name);
-    if (!remote) {
+    if (!remote)
         return OK;
-    }
+
     remote = apr_pstrdup(r->pool, remote);
 
+#ifdef REMOTEIP_OPTIMIZED
+    memcpy(&temp_sa, c->remote_addr, sizeof(temp_sa));
+    temp_sa->pool = r->pool;
+#else
     temp_sa = c->remote_addr;
+#endif
 
     while (remote) {
 
@@ -259,9 +280,8 @@ static int remoteip_modify_request(request_rec *r)
                     break;
                 }
             }
-            if (i && i >= config->proxymatch_ip->nelts) {
+            if (i && i >= config->proxymatch_ip->nelts)
                 break;
-            }
         }
 
         if ((parse_remote = strrchr(remote, ',')) == NULL) {
@@ -272,45 +292,53 @@ static int remoteip_modify_request(request_rec *r)
             *(parse_remote++) = '\0';
         }
 
-        while (*parse_remote == ' ') {
+        while (*parse_remote == ' ') 
             ++parse_remote;
-        }
 
         eos = parse_remote + strlen(parse_remote) - 1;
-        while (eos >= parse_remote && *eos == ' ') {
+        while (eos >= parse_remote && *eos == ' ')
             *(eos--) = '\0';
-        }
 
         if (eos < parse_remote) {
-            if (remote) {
+            if (remote)
                 *(remote + strlen(remote)) = ',';
-            }
-            else {
+            else
                 remote = parse_remote;
-            }
             break;
         }
 
+#ifdef REMOTEIP_OPTIMIZED
+        /* Decode remote_addr - sucks; apr_sockaddr_vars_set isn't 'public' */
+        if (inet_pton(AF_INET, parse_remote, 
+                      &temp_sa_buff->sa.sin.sin_addr) > 0) {
+            apr_sockaddr_vars_set(temp_sa, APR_INET, temp_sa.port);
+        }
+#if APR_HAVE_IPV6
+        else if (inet_pton(AF_INET6, parse_remote, 
+                           &temp_sa->sa.sin6.sin6_addr) > 0) {
+            apr_sockaddr_vars_set(temp_sa, APR_INET6, temp_sa.port);
+        }
+#endif
+        else {
+            rv = apr_get_netos_error();
+#else /* !REMOTEIP_OPTIMIZED */
         /* We map as IPv4 rather than IPv6 for equivilant host names
-         * or IPV4OVERIPV6
+         * or IPV4OVERIPV6 
          */
-        rv = apr_sockaddr_info_get(&temp_sa,  parse_remote,
+        rv = apr_sockaddr_info_get(&temp_sa,  parse_remote, 
                                    APR_UNSPEC, temp_sa->port,
                                    APR_IPV4_ADDR_OK, r->pool);
         if (rv != APR_SUCCESS) {
+#endif
             ap_log_rerror(APLOG_MARK, APLOG_DEBUG,  rv, r,
                           "RemoteIP: Header %s value of %s cannot be parsed "
                           "as a client IP",
                           config->header_name, parse_remote);
-
-            if (remote) {
+            if (remote)
                 *(remote + strlen(remote)) = ',';
-            }
-            else {
+            else
                 remote = parse_remote;
-            }
             break;
-
         }
 
         addrbyte = (unsigned char *) &temp_sa->sa.sin.sin_addr;
@@ -320,7 +348,7 @@ static int remoteip_modify_request(request_rec *r)
               && ((temp_sa->family == APR_INET
                    /* For internet (non-Internal proxies) deny all
                     * RFC3330 designated local/private subnets:
-                    * 10.0.0.0/8   169.254.0.0/16  192.168.0.0/16
+                    * 10.0.0.0/8   169.254.0.0/16  192.168.0.0/16 
                     * 127.0.0.0/8  172.16.0.0/12
                     */
                       && (addrbyte[0] == 10
@@ -330,7 +358,7 @@ static int remoteip_modify_request(request_rec *r)
                        || (addrbyte[0] == 192 && addrbyte[1] == 168)))
 #if APR_HAVE_IPV6
                || (temp_sa->family == APR_INET6
-                   /* For internet (non-Internal proxies) we translated
+                   /* For internet (non-Internal proxies) we translated 
                     * IPv4-over-IPv6-mapped addresses as IPv4, above.
                     * Accept only Global Unicast 2000::/3 defined by RFC4291
                     */
@@ -341,67 +369,81 @@ static int remoteip_modify_request(request_rec *r)
                           "RemoteIP: Header %s value of %s appears to be "
                           "a private IP or nonsensical.  Ignored",
                           config->header_name, parse_remote);
-            if (remote) {
+            if (remote)
                 *(remote + strlen(remote)) = ',';
-            }
-            else {
+            else
                 remote = parse_remote;
-            }
-
             break;
         }
 
-        /* save away our results */
-        if (!req) {
-            req = (remoteip_req_t *) apr_palloc(r->pool, sizeof(remoteip_req_t));
+        if (!conn) {
+            conn = (remoteip_conn_t *) apr_palloc(c->pool, sizeof(*conn));
+            apr_pool_userdata_set(conn, "mod_remoteip-conn", NULL, c->pool);
+            conn->orig_addr = c->remote_addr;
+            conn->orig_ip = c->remote_ip;
         }
 
         /* Set remote_ip string */
         if (!internal) {
-            if (proxy_ips) {
-                proxy_ips = apr_pstrcat(r->pool, proxy_ips, ", ",
+            if (proxy_ips)
+                proxy_ips = apr_pstrcat(r->pool, proxy_ips, ", ", 
                                         c->remote_ip, NULL);
-            }
-            else {
+            else
                 proxy_ips = c->remote_ip;
-            }
         }
 
-        req->remote_addr = temp_sa;
-        apr_sockaddr_ip_get(&req->remote_ip, req->remote_addr);
+        c->remote_addr = temp_sa;
+        apr_sockaddr_ip_get(&c->remote_ip, c->remote_addr);
     }
 
     /* Nothing happened? */
-    if (!req) {
+    if (!conn || (c->remote_addr == conn->orig_addr))
         return OK;
-    }
 
-    req->proxied_remote = remote;
-    req->proxy_ips = proxy_ips;
+    /* Fixups here, remote becomes the new Via header value, etc 
+     * In the heavy operations above we used request scope, to limit
+     * conn pool memory growth on keepalives, so here we must scope
+     * the final results to the connection pool lifetime.
+     * To limit memory growth, we keep recycling the same buffer
+     * for the final apr_sockaddr_t in the remoteip conn rec.
+     */
+    c->remote_ip = apr_pstrdup(c->pool, c->remote_ip);
+    conn->proxied_ip = c->remote_ip;
+    memcpy(&conn->proxied_addr, &temp_sa, sizeof(temp_sa));
+    conn->proxied_addr.pool = c->pool;
+    c->remote_addr = &conn->proxied_addr;
 
-    if (req->proxied_remote) {
+    if (remote)
+        remote = apr_pstrdup(c->pool, remote);
+    conn->proxied_remote = remote;
+    conn->prior_remote = apr_pstrdup(c->pool, apr_table_get(r->headers_in, 
+                                                      config->header_name));
+    if (proxy_ips)
+        proxy_ips = apr_pstrdup(c->pool, proxy_ips);
+    conn->proxy_ips = proxy_ips;
+
+    /* Unset remote_host string DNS lookups */
+    c->remote_host = NULL;
+    c->remote_logname = NULL;
+
+ditto_request_rec:
+    if (conn->proxied_remote)
         apr_table_setn(r->headers_in, config->header_name,
-                       req->proxied_remote);
-    }
-    else {
+                       conn->proxied_remote);
+    else
         apr_table_unset(r->headers_in, config->header_name);
-    }
-    if (req->proxy_ips) {
-        apr_table_setn(r->notes, "remoteip-proxy-ip-list", req->proxy_ips);
-        if (config->proxies_header_name) {
+    if (conn->proxy_ips) {
+        apr_table_setn(r->notes, "remoteip-proxy-ip-list", conn->proxy_ips);
+        if (config->proxies_header_name)
             apr_table_setn(r->headers_in, config->proxies_header_name,
-                           req->proxy_ips);
-        }
+                           conn->proxy_ips);
     }
 
-    c->remote_addr = req->remote_addr;
-    c->remote_ip = req->remote_ip;
-
-    ap_log_rerror(APLOG_MARK, APLOG_INFO, 0, r,
-                  req->proxy_ips
+    ap_log_rerror(APLOG_MARK, APLOG_INFO|APLOG_NOERRNO, 0, r,
+                  conn->proxy_ips 
                       ? "Using %s as client's IP by proxies %s"
                       : "Using %s as client's IP by internal proxies",
-                  req->remote_ip, req->proxy_ips);
+                  conn->proxied_ip, conn->proxy_ips);
     return OK;
 }
 
@@ -433,7 +475,7 @@ static const command_rec remoteip_cmds[] =
 
 static void register_hooks(apr_pool_t *p)
 {
-    ap_hook_post_read_request(remoteip_modify_request, NULL, NULL, APR_HOOK_FIRST);
+    ap_hook_post_read_request(remoteip_modify_connection, NULL, NULL, APR_HOOK_FIRST);
 }
 
 module AP_MODULE_DECLARE_DATA remoteip_module = {
