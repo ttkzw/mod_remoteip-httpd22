@@ -238,6 +238,12 @@ static int remoteip_modify_connection(request_rec *r)
     unsigned char *addrbyte;
     void *internal = NULL;
 
+    /* This should be done only once, not internal subrequests or redirects
+     */
+    if (r->main || r->prev)
+        return OK;
+
+
     apr_pool_userdata_get((void*)&conn, "mod_remoteip-conn", c->pool);
 
     if (conn) {
