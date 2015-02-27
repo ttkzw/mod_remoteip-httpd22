@@ -142,7 +142,7 @@ static const char *proxies_set(cmd_parms *cmd, void *internal,
     if (!config->proxymatch_ip)
         config->proxymatch_ip = apr_array_make(cmd->pool, 1, sizeof(*match));
     match = (remoteip_proxymatch_t *) apr_array_push(config->proxymatch_ip);
-    match->internal = internal;
+    match->internal = cmd->info;;
 
     if (looks_like_ip(ip)) {
         /* Note s may be null, that's fine (explicit host) */
