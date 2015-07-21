@@ -13,4 +13,4 @@ See http://httpd.apache.org/docs/2.4/mod/mod_remoteip.html
 * Backport by Takashi Takizawa <taki@cyber.email.ne.jp>
 
 ## Distribution
-Latest version available from https://github.com/ttkzw/mod_remoteip-http22
+Latest version available from https://github.com/ttkzw/mod_remoteip-httpd22
